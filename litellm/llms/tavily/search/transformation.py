@@ -21,6 +21,7 @@ from litellm.secret_managers.main import get_secret_str
 
 _JSON_OBJECT: Final = TypeAdapter(Mapping[str, object], config=ConfigDict(hide_input_in_errors=True))
 _JSON_VALUES: Final = TypeAdapter(Iterable[object], config=ConfigDict(hide_input_in_errors=True))
+_MAPPED_RESULT_KEYS: Final = frozenset(("title", "url", "content", "published_date"))
 
 
 class _TavilySearchRequestRequired(TypedDict):
@@ -165,7 +166,11 @@ class TavilySearchConfig(BaseSearchConfig):
         - results[].title → SearchResult.title
         - results[].url → SearchResult.url
         - results[].content → SearchResult.snippet
-        - No date/last_updated fields in Tavily response (set to None)
+        - results[].published_date → SearchResult.date
+        - No last_updated field in Tavily response (set to None)
+        - every other results[] key (raw_content, score, favicon, images, ...) → the same key on SearchResult,
+          set only when Tavily returned it
+        - every top-level key except results (answer, images, usage, request_id, ...) → SearchResponse.provider_metadata
 
         Args:
             raw_response: Raw httpx response from Tavily API
@@ -182,16 +187,21 @@ class TavilySearchConfig(BaseSearchConfig):
             result = _JSON_OBJECT.validate_python(raw_result)
             search_result = SearchResult.model_validate(
                 {
+                    # Unmapped Tavily fields come first so the mapped fields below win on a name clash
+                    **{key: value for key, value in result.items() if key not in _MAPPED_RESULT_KEYS},
                     "title": result.get("title", ""),
                     "url": result.get("url", ""),
                     "snippet": result.get("content", ""),  # Tavily uses "content" instead of "snippet"
-                    "date": None,  # Tavily doesn't provide date in response
+                    "date": result.get("published_date"),  # only sent with include_published_date
                     "last_updated": None,  # Tavily doesn't provide last_updated in response
                 }
             )
             results.append(search_result)
 
-        return SearchResponse(
-            results=results,
-            object="search",
+        return SearchResponse.model_validate(
+            {
+                "results": results,
+                "object": "search",
+                "provider_metadata": {key: value for key, value in response_json.items() if key != "results"},
+            }
         )

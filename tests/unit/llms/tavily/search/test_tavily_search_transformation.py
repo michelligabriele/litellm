@@ -3,6 +3,7 @@ Tests for Tavily Search API integration.
 """
 
 import os
+from typing import Final
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import httpx
@@ -100,7 +101,7 @@ def _transform(payload: object) -> SearchResponse:
     )
 
 
-def test_tavily_results_keep_provider_order_and_ignore_answer_and_usage_metadata():
+def test_tavily_results_keep_provider_order_and_return_tavily_fields_and_envelope():
     response = _transform(
         {
             "query": "litellm",
@@ -115,6 +116,7 @@ def test_tavily_results_keep_provider_order_and_ignore_answer_and_usage_metadata
                     "score": 0.81,
                     "raw_content": None,
                     "favicon": "https://example.com/favicon.ico",
+                    "published_date": "2026-01-15",
                 },
                 {"title": "Docs", "url": "https://example.com/docs", "content": "Docs", "raw_content": "Raw docs"},
             ],
@@ -126,15 +128,105 @@ def test_tavily_results_keep_provider_order_and_ignore_answer_and_usage_metadata
 
     assert response.object == "search"
     assert response.results == [
-        SearchResult(title="LiteLLM", url="https://example.com/litellm", snippet="Call every LLM API"),
-        SearchResult(title="Docs", url="https://example.com/docs", snippet="Docs"),
+        SearchResult.model_validate(
+            {
+                "title": "LiteLLM",
+                "url": "https://example.com/litellm",
+                "snippet": "Call every LLM API",
+                "date": "2026-01-15",
+                "score": 0.81,
+                "raw_content": None,
+                "favicon": "https://example.com/favicon.ico",
+            }
+        ),
+        SearchResult.model_validate(
+            {"title": "Docs", "url": "https://example.com/docs", "snippet": "Docs", "raw_content": "Raw docs"}
+        ),
     ]
+    assert response.model_extra == {
+        "provider_metadata": {
+            "query": "litellm",
+            "answer": "LiteLLM is a gateway.",
+            "follow_up_questions": None,
+            "images": [{"url": "https://example.com/image.png", "description": "logo"}],
+            "response_time": 1.67,
+            "usage": {"credits": 1},
+            "request_id": "123e4567-e89b-12d3-a456-426614174111",
+        }
+    }
 
 
 def test_tavily_result_without_title_url_or_content_gets_empty_strings():
     assert _transform({"results": [{"score": 0.5, "raw_content": None}]}).results == [
-        SearchResult(title="", url="", snippet="", date=None, last_updated=None)
+        SearchResult.model_validate(
+            {
+                "title": "",
+                "url": "",
+                "snippet": "",
+                "date": None,
+                "last_updated": None,
+                "score": 0.5,
+                "raw_content": None,
+            }
+        )
     ]
+
+
+@pytest.mark.parametrize(
+    ("tavily_fields", "expected_extras", "expected_date"),
+    [
+        ({}, {}, None),
+        ({"raw_content": "Full page"}, {"raw_content": "Full page"}, None),
+        ({"raw_content": None}, {"raw_content": None}, None),
+        ({"score": 0, "favicon": ""}, {"score": 0, "favicon": ""}, None),
+        (
+            {"images": [{"url": "https://example.com/a.png", "description": "a"}]},
+            {"images": [{"url": "https://example.com/a.png", "description": "a"}]},
+            None,
+        ),
+        ({"a_field_tavily_adds_later": {"x": 1}}, {"a_field_tavily_adds_later": {"x": 1}}, None),
+        ({"published_date": "2026-01-15"}, {}, "2026-01-15"),
+        ({"published_date": None}, {}, None),
+        ({"snippet": "from tavily", "date": "x", "last_updated": "y"}, {}, None),
+    ],
+)
+def test_tavily_result_attaches_every_unmapped_field_tavily_returned(
+    tavily_fields: dict[str, object], expected_extras: dict[str, object], expected_date: str | None
+):
+    response: Final = _transform(
+        {
+            "results": [
+                {"title": "Plain", "url": "https://example.com/plain", "content": "plain"},
+                {"title": "Title", "url": "https://example.com", "content": "Snippet", **tavily_fields},
+            ]
+        }
+    )
+
+    assert [(result.model_extra, result.date, result.snippet) for result in response.results] == [
+        ({}, None, "plain"),
+        (expected_extras, expected_date, "Snippet"),
+    ]
+
+
+@pytest.mark.parametrize(
+    ("payload", "expected_metadata"),
+    [
+        ({}, {}),
+        ({"results": []}, {}),
+        ({"request_id": "abc"}, {"request_id": "abc"}),
+        (
+            {"answer": "a", "usage": {"credits": 2}, "auto_parameters": {"topic": "general"}, "results": [{}]},
+            {"answer": "a", "usage": {"credits": 2}, "auto_parameters": {"topic": "general"}},
+        ),
+    ],
+)
+def test_tavily_response_keeps_the_tavily_envelope_as_provider_metadata(
+    payload: dict[str, object], expected_metadata: dict[str, object]
+):
+    response: Final = _transform(payload)
+
+    assert response.model_extra == {"provider_metadata": expected_metadata}
+    assert response.model_dump(mode="json")["provider_metadata"] == expected_metadata
 
 
 @pytest.mark.parametrize(
@@ -154,6 +246,7 @@ def test_tavily_response_without_results_is_empty(payload):
         ("url", ["https://example.com"]),
         ("content", None),
         ("content", {"text": "snippet"}),
+        ("published_date", 7),
     ],
 )
 def test_tavily_result_with_field_of_wrong_type_is_rejected(field, value):

@@ -293,6 +293,87 @@ def test_concurrent_exa_searches_each_get_their_own_response_envelope(gateway: G
         assert len(wire.drain()) == len(queries)
 
 
+_TAVILY_KEY: Final = "synthetic-tavily-key"
+_TAVILY_ENVELOPE: Final = {
+    "query": _QUERY,
+    "answer": "Margins hold steady.",
+    "images": [],
+    "response_time": 1.67,
+    "usage": {"credits": 2},
+    "request_id": "tavily-request-5d1f0c",
+}
+_TAVILY_RESULT: Final = {
+    "title": "Margin outlook",
+    "url": "https://result.invalid/margins",
+    "content": "Margins hold [...] costs ease.",
+    "score": 0.91,
+    "raw_content": "Margins hold steady. Deposit costs ease. Full page text.",
+    "favicon": "https://result.invalid/favicon.ico",
+}
+
+
+class _TavilySearchResult(_SearchResult):
+    raw_content: str | None = None
+    score: float | None = None
+    favicon: str | None = None
+
+
+class _TavilySearchResponse(BaseModel):
+    object: str
+    results: tuple[_TavilySearchResult, ...]
+    provider_metadata: JsonValue = None
+
+
+def test_tavily_raw_content_and_response_envelope_reach_the_caller(gateway: Gateway) -> None:
+    def respond(request: Request) -> Reply:
+        assert (request.method, request.target) == ("POST", "/tavily/search"), request.target
+        assert json.loads(request.body) == {"query": _QUERY, "include_raw_content": True, "include_answer": True}, (
+            request.body
+        )
+        return Reply(body=json.dumps({**_TAVILY_ENVELOPE, "results": [_TAVILY_RESULT]}).encode())
+
+    tool: Final = f"tavily-tool-{uuid.uuid4().hex}"
+    with wire_server(respond) as wire, gateway.scenario() as scenario:
+        created: Final = gateway.post(
+            "/search_tools",
+            {
+                "search_tool": {
+                    "search_tool_name": tool,
+                    "litellm_params": {
+                        "search_provider": "tavily",
+                        "api_key": _TAVILY_KEY,
+                        "api_base": f"{wire.url}/tavily",
+                    },
+                }
+            },
+        )
+        scenario.cleanups.callback(gateway.request, "DELETE", f"/search_tools/{created['search_tool_id']}")
+        response: Final = gateway.request(
+            "POST",
+            "/v1/search",
+            {"search_tool_name": tool, "query": _QUERY, "include_raw_content": True, "include_answer": True},
+        )
+
+        assert response.status_code == 200, response.text
+        assert _TavilySearchResponse.model_validate_json(response.content) == _TavilySearchResponse(
+            object="search",
+            results=(
+                _TavilySearchResult(
+                    title="Margin outlook",
+                    url="https://result.invalid/margins",
+                    snippet="Margins hold [...] costs ease.",
+                    date=None,
+                    last_updated=None,
+                    raw_content="Margins hold steady. Deposit costs ease. Full page text.",
+                    score=0.91,
+                    favicon="https://result.invalid/favicon.ico",
+                ),
+            ),
+            provider_metadata=_TAVILY_ENVELOPE,
+        ), response.text
+        assert [(request.method, request.target) for request in wire.drain()] == [("POST", "/tavily/search")]
+
+
 def _not_found(name: str) -> str:
     return f"Search tool '{name}' not found in router.search_tools"
 
