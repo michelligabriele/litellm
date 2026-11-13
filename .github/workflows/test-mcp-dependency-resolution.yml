@@ -42,6 +42,10 @@ jobs:
   resolve:
     runs-on: ubuntu-latest
     timeout-minutes: 25
+    env:
+      CARGO_PROFILE_RELEASE_OPT_LEVEL: "0"
+      CARGO_PROFILE_RELEASE_LTO: "off"
+      CARGO_PROFILE_RELEASE_CODEGEN_UNITS: "256"
     strategy:
       fail-fast: false
       matrix:
@@ -129,6 +133,9 @@ jobs:
     env:
       UV_PYTHON: ${{ matrix.python-version }}
       LITELLM_LOCAL_MODEL_COST_MAP: "True"
+      CARGO_PROFILE_RELEASE_OPT_LEVEL: "0"
+      CARGO_PROFILE_RELEASE_LTO: "off"
+      CARGO_PROFILE_RELEASE_CODEGEN_UNITS: "256"
     strategy:
       fail-fast: false
       matrix:
@@ -180,3 +187,4 @@ jobs:
           files: coverage-core.xml
           flags: core-packaging
           fail_ci_if_error: false
+# timing run: release profile overridden to opt-level 0, LTO off, 256 codegen units
