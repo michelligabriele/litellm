@@ -43,7 +43,8 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 25
     env:
-      MATURIN_PEP517_ARGS: "--profile ci"
+      CARGO_PROFILE_RELEASE_LTO: "false"
+      CARGO_PROFILE_RELEASE_CODEGEN_UNITS: "16"
     strategy:
       fail-fast: false
       matrix:
@@ -131,7 +132,8 @@ jobs:
     env:
       UV_PYTHON: ${{ matrix.python-version }}
       LITELLM_LOCAL_MODEL_COST_MAP: "True"
-      MATURIN_PEP517_ARGS: "--profile ci"
+      CARGO_PROFILE_RELEASE_LTO: "false"
+      CARGO_PROFILE_RELEASE_CODEGEN_UNITS: "16"
     strategy:
       fail-fast: false
       matrix:
@@ -183,4 +185,4 @@ jobs:
           files: coverage-core.xml
           flags: core-packaging
           fail_ci_if_error: false
-# timing run: ci cargo profile
+# timing run: release profile without LTO, 16 codegen units
